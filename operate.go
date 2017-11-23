@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+func (r *Run) getAPIsInfo() {
+	wd := <-r.wds
+	if err := r.getDbashboards(wd); err != nil {
+		panic(err)
+	}
+	if err := r.getPanels(wd); err != nil {
+		panic(err)
+	}
+	r.wds <- wd
+
+}
+
 func (r *Run) savePng(wd selenium.WebDriver, name string) error {
 	time.Sleep(2 * time.Second)
 	screen, err := wd.Screenshot()
@@ -23,7 +35,7 @@ func (r *Run) savePng(wd selenium.WebDriver, name string) error {
 }
 
 func (r *Run) loginGrafana(wd selenium.WebDriver, port int) error {
-	loginURL := fmt.Sprintf("%s%s", BaseHTTP, LoginURL)
+	loginURL := fmt.Sprintf("%s%s", BaseHTTP, loginPath)
 	if err := wd.Get(loginURL); err != nil {
 		return err
 	}
@@ -58,7 +70,7 @@ func (r *Run) createChromes(port int) {
 	//selenium.Output(os.Stderr), // Output debug information to STDERR.
 	}
 	//selenium.SetDebug(true)2
-	service, err := selenium.NewSeleniumService(seleniumPath, port, opts...)
+	service, err := selenium.NewSeleniumService(r.seleniumPath, port, opts...)
 	if err != nil {
 		panic(err) // panic is used only as an example and is not otherwise recommended.
 	}
@@ -215,5 +227,29 @@ func tryLoad(wd selenium.WebDriver, key string, sleepTime int64, click bool) (se
 	}
 
 	return elem, nil
+
+}
+
+func (r *Run) schedule() {
+	for wd := range r.wds {
+		go func(wd selenium.WebDriver) {
+			for {
+				select {
+				case <-r.ctx.Done():
+					return
+				default:
+					if len(r.dashboardUrls) > 0 {
+						r.getShareURL(wd, <-r.dashboardUrls, false)
+					}
+					if len(r.panelUrls) > 0 {
+						r.getShareURL(wd, <-r.panelUrls, true)
+					}
+					if len(r.panelUrls) == 0 && len(r.dashboardUrls) == 0 {
+						break
+					}
+				}
+			}
+		}(wd)
+	}
 
 }

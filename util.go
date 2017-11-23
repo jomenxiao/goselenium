@@ -22,5 +22,10 @@ func (r *Run) prefixWork() error {
 	if _, err := os.Stat(r.screenDir); os.IsNotExist(err) {
 		return os.Mkdir(r.screenDir, 0774)
 	}
+
+	r.seleniumPath = filepath.Join(workDir, "vendor", seleniumFile)
+	if _, err := os.Stat(r.seleniumPath); os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }

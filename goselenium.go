@@ -1,14 +1,22 @@
 package main
 
 import (
+	"flag"
+	"fmt"
+	"github.com/araddon/dateparse"
 	"github.com/ngaut/log"
 	"github.com/tebeka/selenium"
+	"golang.org/x/net/context"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 )
 
 const (
-	// These paths will be different on your system.
-	seleniumPath = "vendor/selenium-server-standalone-3.4.jar"
+	seleniumFile = "selenium-server-standalone-3.4.jar"
+	pngDir       = "SnapshotDir"
 	// geckoDriverPath = "vendor/geckodriver-v0.18.0-linux64"
 	portStart = 8080
 
@@ -18,52 +26,66 @@ const (
 	externalEnabledButtion = `//button[@ng-if="externalEnabled"]`
 	shareElement           = `//a[@class="large share-modal-link"]`
 	existPanelElementFlag  = `//canvas[@class="flot-overlay"]`
+
+	loginPath    = "/login"
+	dashboardAPI = "/api/search?query="
+	panelAPI     = "/api/annotations?limit=10000"
+
+	timeFormat = "2006-01-02 15:04:05"
 )
 
 var (
-	pngDir       = "SnapshotDir"
-	BaseHTTP     = "http://192.168.2.188:3000"
-	LoginURL     = "/login"
-	UserName     = "admin"
-	PassWord     = "admin"
-	dashboardAPI = "/api/search?query="
-	panelAPI     = "/api/annotations?limit=10000"
-	FromTime     = 1510535835702
-	ToTime       = 1511075844572
+	BaseHTTP string
+	UserName string
+	PassWord string
+	From     string
+	To       string
+	FromTime int64
+	ToTime   int64
 )
 
 type Run struct {
+	ctx           context.Context
+	cancel        context.CancelFunc
 	svrs          chan *selenium.Service
 	wds           chan selenium.WebDriver
 	dashboards    []string
 	dashboardUrls chan string
 	panelUrls     chan string
 	screenDir     string
+	seleniumPath  string
 }
 
-func (r *Run) schedule() {
-	for wd := range r.wds {
-		go func(wd selenium.WebDriver) {
-			for {
-				if len(r.dashboardUrls) > 0 {
-					r.getShareURL(wd, <-r.dashboardUrls, false)
-				}
-				if len(r.panelUrls) > 0 {
-					r.getShareURL(wd, <-r.panelUrls, true)
-				}
-				if len(r.panelUrls) == 0 && len(r.dashboardUrls) == 0 {
-					break
-				}
-			}
-		}(wd)
-	}
+func init() {
+	var err error
 
+	flag.StringVar(&BaseHTTP, "grafana_address", "http://192.168.2.188:3000", "input grafana_address")
+	flag.StringVar(&UserName, "grafana_username", "admin", "granfan username")
+	flag.StringVar(&PassWord, "grafana_password", "admin", "grafana password")
+	flag.StringVar(&From, "grafana_starttime", time.Now().Local().AddDate(0, 0, -3).Format(timeFormat), "input start time, default is 3 days ago")
+	flag.StringVar(&To, "grafana_endtime", time.Now().Local().Format(timeFormat), "input end time,default is now")
+
+	ft, err := dateparse.ParseLocal(From)
+	if err != nil {
+		panic(fmt.Sprintf("start time is error %v", err))
+	}
+	FromTime = ft.Unix() * 1000
+	et, err := dateparse.ParseLocal(To)
+	if err != nil {
+		panic(fmt.Sprintf("end time is error %v", err))
+	}
+	ToTime = et.Unix() * 1000
 }
 
 func main() {
-	var wgS sync.WaitGroup
+	flag.Parse()
+
+	var wgS, wgForever sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
 	runNum := getCPUNum() / 2
 	r := &Run{
+		ctx:           ctx,
+		cancel:        cancel,
 		svrs:          make(chan *selenium.Service, runNum),
 		wds:           make(chan selenium.WebDriver, runNum),
 		dashboardUrls: make(chan string, 10),
@@ -81,23 +103,32 @@ func main() {
 		}()
 	}
 	wgS.Wait()
-	defer func() {
-		for wd := range r.wds {
-			wd.Quit()
-		}
-		for svr := range r.svrs {
-			svr.Stop()
-		}
+
+	r.getAPIsInfo()
+	go r.schedule()
+
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+	wgForever.Add(1)
+	go func() {
+		sig := <-sc
+		log.Errorf("Got signal [%d] to exit.", sig)
+		r.cancel()
+		wgForever.Done()
+		defer func() {
+			for wd := range r.wds {
+				wd.Quit()
+			}
+			for svr := range r.svrs {
+				svr.Stop()
+			}
+		}()
+
 	}()
 
-	wd := <-r.wds
-	if err := r.getDbashboards(wd); err != nil {
-		panic(err)
-	}
-	if err := r.getPanels(wd); err != nil {
-		panic(err)
-	}
-	r.wds <- wd
-
-	r.schedule()
+	wgForever.Wait()
 }
