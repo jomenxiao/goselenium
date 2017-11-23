@@ -91,8 +91,8 @@ func main() {
 		dashboardUrls: make(chan string, 10),
 		panelUrls:     make(chan string, 10000),
 	}
-	if err := r.prefixWork(); err != nil || r.screenDir == "" {
-		log.Errorf("can not create screenshot directory with err %v", err)
+	if err := r.prefixWork(); err != nil || r.screenDir == "" || r.seleniumPath == "" {
+		log.Errorf("can not create screenshot directory or get selenium file with err %v", err)
 		return
 	}
 	for i := 0; i < runNum; i++ {
